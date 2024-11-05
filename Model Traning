@@ -1,0 +1,77 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, matthews_corrcoef, roc_auc_score
+from sklearn.preprocessing import StandardScaler
+from deepforest import CascadeForestClassifier
+
+def extract_ggap_features(data):
+    R_channel, G_channel, B_channel = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    for col in data.columns:
+        if "gap0" in col:
+            R_channel[col] = data[col]
+        elif "gap1" in col:
+            G_channel[col] = data[col]
+        elif "gap2" in col:
+            B_channel[col] = data[col]
+
+    min_feature_count = min(len(R_channel.columns), len(G_channel.columns), len(B_channel.columns))
+    R_channel, G_channel, B_channel = R_channel.iloc[:, :min_feature_count], G_channel.iloc[:, :min_feature_count], B_channel.iloc[:, :min_feature_count]
+
+    return R_channel, G_channel, B_channel
+
+def create_rgb_image_features(R_channel, G_channel, B_channel):
+    img_size = int(np.sqrt(R_channel.shape[1]))
+    R_img = R_channel.values.reshape(-1, img_size, img_size, 1)
+    G_img = G_channel.values.reshape(-1, img_size, img_size, 1)
+    B_img = B_channel.values.reshape(-1, img_size, img_size, 1)
+
+    RGB_images = np.concatenate([R_img, G_img, B_img], axis=3)
+    RGB_images_adjusted = np.clip(RGB_images * 1.5, 0, 1)
+    return RGB_images_adjusted.reshape(RGB_images_adjusted.shape[0], -1)
+
+def main():
+    positive_data = pd.read_csv(input('Enter the filename for positive data: '))
+    negative_data = pd.read_csv(input('Enter the filename for negative data: '))
+    positive_data['label'], negative_data['label'] = 1, 0
+    data = pd.concat([positive_data, negative_data], ignore_index=True).sample(frac=1).reset_index(drop=True)
+
+    labels = data['label']
+    features = data.drop(['label'], axis=1)
+
+    R_channel, G_channel, B_channel = extract_ggap_features(features)
+    flattened_images = create_rgb_image_features(R_channel, G_channel, B_channel)
+    enhanced_features = np.concatenate([features.values, flattened_images], axis=1)
+    scaled_features = StandardScaler().fit_transform(enhanced_features)
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True)
+    cv_scores = []
+
+    for train_idx, test_idx in cv.split(scaled_features, labels):
+        X_train_fold, X_test_fold = scaled_features[train_idx], scaled_features[test_idx]
+        y_train_fold, y_test_fold = labels[train_idx], labels[test_idx]
+
+        model = CascadeForestClassifier(n_estimators=2, min_samples_split=2, min_samples_leaf=1)
+        model.fit(X_train_fold, y_train_fold)
+        predictions = model.predict(X_test_fold)
+        cv_scores.append(accuracy_score(y_test_fold, predictions))
+
+    print("Cross-Validation Accuracy Scores:", cv_scores)
+
+    X_train, X_test, y_train, y_test = train_test_split(scaled_features, labels, test_size=0.2)
+    model.fit(X_train, y_train)
+
+    predictions = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    print(f'Confusion Matrix:\n{confusion_matrix(y_test, predictions)}')
+    print(f'Accuracy: {accuracy_score(y_test, predictions):.4f}')
+    print(f'Sensitivity (Recall): {recall_score(y_test, predictions):.4f}')
+    print(f'Precision: {precision_score(y_test, predictions):.4f}')
+    print(f'F1 Score: {f1_score(y_test, predictions):.4f}')
+    print(f'Matthews Correlation Coefficient: {matthews_corrcoef(y_test, predictions):.4f}')
+    print(f'Area Under Curve (AUC): {roc_auc_score(y_test, y_prob):.4f}')
+
+if __name__ == "__main__":
+    main()
